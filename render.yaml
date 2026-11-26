@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: medyesa-field-api
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: "npm ci && npm run build && npx prisma migrate deploy"
+    startCommand: "npm start"
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: RATE_LIMIT_MAX
+        value: "100"

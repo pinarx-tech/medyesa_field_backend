@@ -1,0 +1,376 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+enum Role {
+  platformAdmin
+  headController
+  mr
+}
+
+enum AccountStatus {
+  active
+  deactivated
+  suspended
+}
+
+enum SubscriptionStatus {
+  active
+  pastDue
+  canceled
+  suspended
+}
+
+enum VisitVerificationStatus {
+  verified
+  outsideRadius
+  overridden
+  noLocation
+  locationUnavailable
+  permissionDenied
+  accuracyInsufficient
+  unverified
+}
+
+enum SyncStatus {
+  pending
+  synced
+  failed
+}
+
+model Company {
+  id                 Int                @id @default(autoincrement())
+  name               String
+  code               String             @unique
+  isActive           Boolean            @default(true)
+  licensedMrSeats    Int                @default(10)
+  licensedHcSeats    Int                @default(2)
+  subscriptionStatus SubscriptionStatus @default(active)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  users                  User[]
+  doctors                Doctor[]
+  doctorClinicLocations  DoctorClinicLocation[]
+  territories            Territory[]
+  mrTerritoryAssignments MrTerritoryAssignment[]
+  territoryDoctors       TerritoryDoctor[]
+  visits                 Visit[]
+  visitNotes             VisitNote[]
+  workDays               WorkDay[]
+  activityLogs           ActivityLog[]
+
+  @@index([code])
+}
+
+model User {
+  id                 String        @id @default(uuid())
+  companyId          Int?
+  employeeId         String
+  email              String
+  displayName        String
+  phone              String?
+  passwordHash       String
+  role               Role
+  accountStatus      AccountStatus @default(active)
+  mustChangePassword Boolean       @default(false)
+  lastLoginAt        DateTime?
+  deletedAt          DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  company             Company?       @relation(fields: [companyId], references: [id])
+  platformAdmin       PlatformAdmin?
+  visitsAsMr          Visit[]
+  workDays            WorkDay[]
+  activityLogsAsActor ActivityLog[]  @relation("ActivityActor")
+  refreshTokens       RefreshToken[]
+
+  @@unique([companyId, employeeId])
+  @@unique([companyId, email])
+  @@index([companyId])
+  @@index([email])
+}
+
+model PlatformAdmin {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Doctor {
+  id                   String    @id @default(uuid())
+  companyId            Int
+  name                 String
+  specialty            String
+  clinicName           String?
+  phone                String?
+  email                String?
+  isCustom             Boolean   @default(false)
+  isArchived           Boolean   @default(false)
+  geofenceRadiusMeters Int       @default(100)
+  deletedAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  company          Company                @relation(fields: [companyId], references: [id])
+  clinicLocations  DoctorClinicLocation[]
+  visits           Visit[]
+  territoryDoctors TerritoryDoctor[]
+
+  @@index([companyId])
+  @@index([companyId, isArchived])
+}
+
+model DoctorClinicLocation {
+  id               String   @id @default(uuid())
+  companyId        Int
+  doctorId         String
+  latitude         Float?
+  longitude        Float?
+  accuracyMeters   Float?
+  clinicName       String?
+  formattedAddress String?
+  placeName        String?
+  placeProvider    String?
+  placeProviderId  String?
+  source           String
+  status           String
+  isCurrent        Boolean  @default(false)
+  capturedAt       DateTime @default(now())
+  capturedByUserId String
+  createdAt        DateTime @default(now())
+
+  doctor  Doctor  @relation(fields: [doctorId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([doctorId, isCurrent])
+  @@index([companyId])
+}
+
+model Territory {
+  id                        String    @id @default(uuid())
+  companyId                 Int
+  code                      String
+  name                      String
+  description               String?
+  notes                     String?
+  isArchived                Boolean   @default(false)
+  createdByHeadControllerId String?
+  archivedAt                DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  company          Company                 @relation(fields: [companyId], references: [id])
+  mrAssignments    MrTerritoryAssignment[]
+  territoryDoctors TerritoryDoctor[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+}
+
+model MrTerritoryAssignment {
+  id                         String    @id @default(uuid())
+  companyId                  Int
+  mrId                       String
+  territoryId                String
+  assignedAt                 DateTime  @default(now())
+  unassignedAt               DateTime?
+  assignedByHeadControllerId String
+
+  territory Territory @relation(fields: [territoryId], references: [id])
+  company   Company   @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, mrId, unassignedAt])
+  @@index([territoryId, unassignedAt])
+}
+
+model TerritoryDoctor {
+  id                         String    @id @default(uuid())
+  companyId                  Int
+  territoryId                String
+  doctorId                   String
+  assignedAt                 DateTime  @default(now())
+  unassignedAt               DateTime?
+  assignedByHeadControllerId String
+
+  territory Territory @relation(fields: [territoryId], references: [id])
+  doctor    Doctor    @relation(fields: [doctorId], references: [id])
+  company   Company   @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, territoryId, unassignedAt])
+  @@index([doctorId, unassignedAt])
+}
+
+model WorkDay {
+  id         String    @id @default(uuid())
+  companyId  Int
+  mrId       String
+  startedAt  DateTime
+  endedAt    DateTime?
+  autoClosed Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  mr      User    @relation(fields: [mrId], references: [id])
+  visits  Visit[]
+
+  @@index([companyId, mrId, startedAt])
+  @@index([mrId, endedAt])
+}
+
+model Visit {
+  id                              String                  @id @default(uuid())
+  companyId                       Int
+  mrId                            String
+  doctorId                        String
+  workDayId                       String?
+  status                          String
+  checkInLatitude                 Float?
+  checkInLongitude                Float?
+  checkInAccuracyMeters           Float?
+  checkInDistanceMeters           Float?
+  checkInVerificationStatus       VisitVerificationStatus @default(unverified)
+  checkInOverrideReason           String?
+  checkInCapturedAt               DateTime?
+  checkOutAt                      DateTime?
+  doctorClinicLocationIdAtCheckIn String?
+  territoryIdAtVisit              String?
+  correctsVisitId                 String?
+  capturedAtClient                DateTime
+  createdAt                       DateTime                @default(now())
+  updatedAt                       DateTime                @updatedAt
+
+  company       Company    @relation(fields: [companyId], references: [id])
+  mr            User       @relation(fields: [mrId], references: [id])
+  doctor        Doctor     @relation(fields: [doctorId], references: [id])
+  workDay       WorkDay?   @relation(fields: [workDayId], references: [id])
+  note          VisitNote?
+  correctsVisit Visit?     @relation("VisitCorrection", fields: [correctsVisitId], references: [id])
+  correctedBy   Visit[]    @relation("VisitCorrection")
+
+  @@index([companyId, mrId, capturedAtClient])
+  @@index([companyId, doctorId, capturedAtClient])
+  @@index([correctsVisitId])
+}
+
+model VisitNote {
+  id        String   @id @default(uuid())
+  companyId Int
+  visitId   String   @unique
+  doctorId  String
+  visitDate DateTime @db.Date
+  noteText  String   @db.VarChar(500)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  visit   Visit   @relation(fields: [visitId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, doctorId, visitDate])
+}
+
+model ActivityLog {
+  id                 String   @id @default(uuid())
+  companyId          Int?
+  actorId            String
+  actorRole          Role
+  actorDisplayName   String
+  actionType         String
+  subjectType        String?
+  subjectId          String?
+  subjectDisplayName String?
+  territoryId        String?
+  detailsJson        Json?
+  occurredAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id])
+  actor   User     @relation("ActivityActor", fields: [actorId], references: [id])
+
+  @@index([companyId, occurredAt])
+  @@index([actorId, occurredAt])
+  @@index([actionType])
+}
+
+model HcNotificationPrefs {
+  id                                String   @id @default(uuid())
+  companyId                         Int
+  headControllerId                  String
+  verifiedVisitNotificationsEnabled Boolean  @default(true)
+  overrideNotificationsEnabled      Boolean  @default(true)
+  updatedAt                         DateTime @updatedAt
+  createdAt                         DateTime @default(now())
+
+  @@unique([companyId, headControllerId])
+  @@index([companyId])
+}
+
+model SyncOperation {
+  id          String     @id
+  companyId   Int
+  actorId     String
+  entityType  String
+  entityId    String
+  operation   String
+  payload     Json
+  status      SyncStatus @default(pending)
+  attempts    Int        @default(0)
+  lastError   String?
+  serverId    String?
+  receivedAt  DateTime   @default(now())
+  processedAt DateTime?
+
+  @@index([companyId, status])
+  @@index([companyId, entityType, entityId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  companyId  Int?
+  actorId    String?
+  action     String
+  targetType String
+  targetId   String?
+  metadata   Json?
+  ipAddress  String?
+  occurredAt DateTime @default(now())
+
+  @@index([companyId, occurredAt])
+  @@index([action])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
