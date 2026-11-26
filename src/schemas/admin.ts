@@ -15,7 +15,10 @@ export const createCompanyBodySchema = z.object({
     .string()
     .trim()
     .toLowerCase()
-    .regex(/^[a-z0-9][a-z0-9_-]{1,39}$/, 'Code must be 2–40 lowercase alphanumeric characters'),
+    .regex(
+      /^[a-z0-9][a-z0-9_-]{1,39}$/,
+      'Code must be 2-40 lowercase alphanumeric characters',
+    ),
   licensedMrSeats: z.number().int().min(0).max(10000).default(10),
   licensedHcSeats: z.number().int().min(0).max(1000).default(2),
 });
@@ -39,7 +42,7 @@ export const createUserBodySchema = z.object({
   displayName: z.string().trim().min(2).max(120),
   phone: z.string().trim().min(7).max(20).optional().nullable(),
   role: z.enum(['headController', 'mr']),
-  initialPassword: z.string().min(8).max(128),
+  initialPassword: z.string().min(8).max(128).optional(),
 });
 
 export const updateUserBodySchema = z
@@ -53,11 +56,12 @@ export const updateUserBodySchema = z
   });
 
 export const adminResetPasswordBodySchema = z.object({
-  newPassword: z.string().min(8).max(128),
+  newPassword: z.string().min(8).max(128).optional(),
 });
 
 export const listUsersQuerySchema = z.object({
   companyId: z.coerce.number().int().positive().optional(),
   role: z.enum(['platformAdmin', 'headController', 'mr']).optional(),
   status: z.enum(['active', 'deactivated', 'suspended']).optional(),
+  q: z.string().trim().max(120).optional(),
 });

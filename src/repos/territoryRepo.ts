@@ -1,4 +1,5 @@
 import { Role } from '@prisma/client';
+import { writeAuditLog } from '../lib/audit.js';
 import { AppError } from '../lib/errors.js';
 import { Repo } from '../lib/repo.js';
 
@@ -17,6 +18,60 @@ export class TerritoryRepo extends Repo {
       },
       orderBy: { name: 'asc' },
     });
+  }
+
+  async getDetail(territoryId: string) {
+    const companyId = this.scopeCompany();
+    const territory = await this.prisma.territory.findFirst(/* companyId */ {
+      where: { companyId, id: territoryId },
+    });
+    if (!territory) {
+      throw new AppError('not_found', 404, 'Territory not found.');
+    }
+
+    const [doctorLinks, mrAssignments] = await Promise.all([
+      this.prisma.territoryDoctor.findMany(/* companyId */ {
+        where: { companyId, territoryId, unassignedAt: null },
+        include: {
+          doctor: {
+            select: {
+              id: true,
+              name: true,
+              specialty: true,
+              clinicName: true,
+              isArchived: true,
+              deletedAt: true,
+            },
+          },
+        },
+      }),
+      this.prisma.mrTerritoryAssignment.findMany(/* companyId */ {
+        where: { companyId, territoryId, unassignedAt: null },
+        select: { mrId: true, assignedAt: true },
+      }),
+    ]);
+
+    const mrIds = mrAssignments.map((m) => m.mrId);
+    const mrs =
+      mrIds.length > 0
+        ? await this.prisma.user.findMany({
+            where: { companyId, id: { in: mrIds }, deletedAt: null },
+            select: {
+              id: true,
+              employeeId: true,
+              displayName: true,
+              accountStatus: true,
+            },
+          })
+        : [];
+
+    return {
+      territory,
+      doctors: doctorLinks
+        .filter((l) => !l.doctor.isArchived && l.doctor.deletedAt === null)
+        .map((l) => l.doctor),
+      mrs,
+    };
   }
 
   async create(input: {
@@ -200,17 +255,29 @@ export class TerritoryRepo extends Repo {
     let nextTerritoryName: string | null = null;
     if (territoryId !== null) {
       const territory = await this.prisma.territory.findFirst(/* companyId */ {
-        where: { companyId, id: territoryId, isArchived: false },
+        where: { companyId, id: territoryId },
       });
       if (!territory) {
         throw new AppError('not_found', 404, 'Territory not found.');
       }
+      if (territory.isArchived) {
+        throw new AppError(
+          'business_rule_violation',
+          422,
+          'Cannot assign an MR to an archived territory.',
+        );
+      }
       nextTerritoryName = territory.name;
     }
 
+    const prevAssignment = await this.prisma.mrTerritoryAssignment.findFirst(/* companyId */ {
+      where: { companyId, mrId, unassignedAt: null },
+      include: { territory: { select: { id: true, name: true } } },
+    });
+
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      await tx.mrTerritoryAssignment.updateMany({
+      await tx.mrTerritoryAssignment.updateMany(/* companyId */ {
         where: { companyId, mrId, unassignedAt: null },
         data: { unassignedAt: now },
       });
@@ -226,7 +293,18 @@ export class TerritoryRepo extends Repo {
           },
         });
       }
-    });
+    }, { maxWait: 10_000, timeout: 20_000 });
+
+    const auditPayload = {
+      mrId: mr.id,
+      beforeTerritoryId: prevAssignment?.territoryId ?? null,
+      beforeTerritoryName: prevAssignment?.territory.name ?? 'Not assigned',
+      afterTerritoryId: territoryId,
+      afterTerritoryName: nextTerritoryName ?? 'Not assigned',
+      changedByUserId: this.ctx.userId,
+      changedByName: this.ctx.displayName,
+      changedAt: now.toISOString(),
+    };
 
     await this.prisma.activityLog.create({
       data: {
@@ -239,10 +317,24 @@ export class TerritoryRepo extends Repo {
         subjectId: mr.id,
         subjectDisplayName: mr.displayName,
         territoryId,
-        detailsJson: { after: nextTerritoryName ?? 'Not assigned' },
+        detailsJson: auditPayload,
       },
     });
 
-    return { mrId: mr.id, territoryId };
+    await writeAuditLog(this.prisma, {
+      companyId,
+      actorId: this.ctx.userId,
+      action: 'hc_territory_reassigned',
+      targetType: 'mr',
+      targetId: mr.id,
+      metadata: auditPayload,
+      ipAddress: this.ctx.ipAddress,
+    });
+
+    return {
+      mrId: mr.id,
+      territoryId,
+      previousTerritoryId: prevAssignment?.territoryId ?? null,
+    };
   }
 }

@@ -44,6 +44,14 @@ enum SyncStatus {
   failed
 }
 
+enum DataClassification {
+  production
+  demo
+  seed
+  test
+  historicalImported
+}
+
 model Company {
   id                 Int                @id @default(autoincrement())
   name               String
@@ -52,10 +60,12 @@ model Company {
   licensedMrSeats    Int                @default(10)
   licensedHcSeats    Int                @default(2)
   subscriptionStatus SubscriptionStatus @default(active)
+  dataClassification DataClassification @default(production)
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
   users                  User[]
+  clinics                Clinic[]
   doctors                Doctor[]
   doctorClinicLocations  DoctorClinicLocation[]
   territories            Territory[]
@@ -121,28 +131,56 @@ model RefreshToken {
   @@index([userId])
 }
 
+model Clinic {
+  id                 String             @id @default(uuid())
+  companyId          Int
+  name               String
+  normalizedName     String
+  formattedAddress   String
+  landmark           String?
+  phone              String?
+  latitude           Float?
+  longitude          Float?
+  accuracyMeters     Float?
+  source             String             @default("manual")
+  isArchived         Boolean            @default(false)
+  dataClassification DataClassification @default(production)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  company Company  @relation(fields: [companyId], references: [id])
+  doctors Doctor[]
+
+  @@index([companyId])
+  @@index([companyId, normalizedName])
+}
+
 model Doctor {
-  id                   String    @id @default(uuid())
+  id                   String             @id @default(uuid())
   companyId            Int
+  clinicId             String?
   name                 String
   specialty            String
   clinicName           String?
   phone                String?
   email                String?
-  isCustom             Boolean   @default(false)
-  isArchived           Boolean   @default(false)
-  geofenceRadiusMeters Int       @default(100)
+  isCustom             Boolean            @default(false)
+  isArchived           Boolean            @default(false)
+  geofenceRadiusMeters Int                @default(100)
+  dataClassification   DataClassification @default(production)
   deletedAt            DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   company          Company                @relation(fields: [companyId], references: [id])
+  clinic           Clinic?                @relation(fields: [clinicId], references: [id])
   clinicLocations  DoctorClinicLocation[]
   visits           Visit[]
   territoryDoctors TerritoryDoctor[]
 
   @@index([companyId])
   @@index([companyId, isArchived])
+  @@index([clinicId])
 }
 
 model DoctorClinicLocation {
@@ -172,17 +210,18 @@ model DoctorClinicLocation {
 }
 
 model Territory {
-  id                        String    @id @default(uuid())
+  id                        String             @id @default(uuid())
   companyId                 Int
   code                      String
   name                      String
   description               String?
   notes                     String?
-  isArchived                Boolean   @default(false)
+  isArchived                Boolean            @default(false)
   createdByHeadControllerId String?
   archivedAt                DateTime?
-  createdAt                 DateTime  @default(now())
-  updatedAt                 DateTime  @updatedAt
+  dataClassification        DataClassification @default(production)
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
 
   company          Company                 @relation(fields: [companyId], references: [id])
   mrAssignments    MrTerritoryAssignment[]
@@ -226,14 +265,19 @@ model TerritoryDoctor {
 }
 
 model WorkDay {
-  id         String    @id @default(uuid())
-  companyId  Int
-  mrId       String
-  startedAt  DateTime
-  endedAt    DateTime?
-  autoClosed Boolean   @default(false)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id                 String             @id @default(uuid())
+  companyId          Int
+  mrId               String
+  startedAt          DateTime
+  endedAt            DateTime?
+  autoClosed         Boolean            @default(false)
+  previousEndedAt    DateTime?
+  reopenedAt         DateTime?
+  reopenedByUserId   String?
+  reopenReason       String?
+  dataClassification DataClassification @default(production)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   company Company @relation(fields: [companyId], references: [id])
   mr      User    @relation(fields: [mrId], references: [id])
@@ -262,6 +306,7 @@ model Visit {
   territoryIdAtVisit              String?
   correctsVisitId                 String?
   capturedAtClient                DateTime
+  dataClassification              DataClassification      @default(production)
   createdAt                       DateTime                @default(now())
   updatedAt                       DateTime                @updatedAt
 
@@ -295,7 +340,7 @@ model VisitNote {
 }
 
 model ActivityLog {
-  id                 String   @id @default(uuid())
+  id                 String             @id @default(uuid())
   companyId          Int?
   actorId            String
   actorRole          Role
@@ -306,8 +351,9 @@ model ActivityLog {
   subjectDisplayName String?
   territoryId        String?
   detailsJson        Json?
-  occurredAt         DateTime @default(now())
-  createdAt          DateTime @default(now())
+  dataClassification DataClassification @default(production)
+  occurredAt         DateTime           @default(now())
+  createdAt          DateTime           @default(now())
 
   company Company? @relation(fields: [companyId], references: [id])
   actor   User     @relation("ActivityActor", fields: [actorId], references: [id])
