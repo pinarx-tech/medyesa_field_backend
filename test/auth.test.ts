@@ -523,4 +523,124 @@ describe('Auth endpoints (Tests 4–18)', () => {
     });
     expect(loginRes.statusCode).toBe(200);
   });
+
+  describe('Platform Admin login', () => {
+    it('logs in using email', async () => {
+      const { user } = await seedPlatformAdmin(prisma);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/platform-admin/login',
+        payload: {
+          employeeIdOrEmail: user.email,
+          password: TEST_PASSWORD,
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.accessToken).toBeTypeOf('string');
+      expect(body.refreshToken).toBeTypeOf('string');
+      expect(body.user.id).toBe(user.id);
+      expect(body.user.role).toBe('platformAdmin');
+      expect(body.user.passwordHash).toBeUndefined();
+
+      const storedTokens = await prisma.refreshToken.count({
+        where: { userId: user.id },
+      });
+      expect(storedTokens).toBe(1);
+    });
+
+    it('logs in using employee ID', async () => {
+      const { user } = await seedPlatformAdmin(prisma);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/platform-admin/login',
+        payload: {
+          employeeIdOrEmail: user.employeeId,
+          password: TEST_PASSWORD,
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().user.id).toBe(user.id);
+    });
+
+    it('rejects an incorrect password', async () => {
+      const { user } = await seedPlatformAdmin(prisma);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/platform-admin/login',
+        payload: {
+          employeeIdOrEmail: user.email,
+          password: 'WrongPassword!123',
+        },
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('rejects a company HC/MR account', async () => {
+      const { mr } = await seedCompanyWithUsers(prisma, {
+        code: 'medyesa',
+        name: 'Medyesa Healthcare',
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/platform-admin/login',
+        payload: {
+          employeeIdOrEmail: mr.email,
+          password: TEST_PASSWORD,
+        },
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('rejects a deactivated Platform Admin', async () => {
+      const { user } = await seedPlatformAdmin(prisma);
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { accountStatus: AccountStatus.deactivated },
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/platform-admin/login',
+        payload: {
+          employeeIdOrEmail: user.email,
+          password: TEST_PASSWORD,
+        },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('account_inactive');
+    });
+
+    it('rejects a suspended Platform Admin', async () => {
+      const { user } = await seedPlatformAdmin(prisma);
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { accountStatus: AccountStatus.suspended },
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/platform-admin/login',
+        payload: {
+          employeeIdOrEmail: user.email,
+          password: TEST_PASSWORD,
+        },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('account_inactive');
+    });
+  });
+
 });

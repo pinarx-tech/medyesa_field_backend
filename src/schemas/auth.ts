@@ -28,3 +28,9 @@ export const resetPasswordBodySchema = z.object({
   token: z.string().min(1, 'Reset token is required'),
   newPassword: z.string().min(8, 'New password must be at least 8 characters'),
 });
+
+// Dedicated login schema for the PINARX Platform Admin portal.
+export const platformAdminLoginBodySchema = z.object({
+  employeeIdOrEmail: z.string().trim().min(1, 'Email or employee ID is required'),
+  password: z.string().min(1, 'Password is required'),
+});
