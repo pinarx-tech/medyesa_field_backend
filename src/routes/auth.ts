@@ -18,6 +18,7 @@ import {
   logoutBodySchema,
   refreshBodySchema,
   resetPasswordBodySchema,
+  platformAdminLoginBodySchema,
 } from '../schemas/auth.js';
 
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -29,6 +30,88 @@ export async function registerAuthRoutes(
 ): Promise<void> {
   const typed = app.withTypeProvider<ZodTypeProvider>();
   const authenticate = buildAuthPreHandler(prisma);
+
+  // Dedicated authentication endpoint for the PINARX administration portal.
+  typed.post(
+    '/v1/auth/platform-admin/login',
+    { schema: { body: platformAdminLoginBodySchema } },
+    async (req) => {
+      const { employeeIdOrEmail, password } = req.body;
+
+      const user = await prisma.user.findFirst({
+        where: {
+          platformAdmin: { isNot: null },
+          role: Role.platformAdmin,
+          OR: [
+            { employeeId: { equals: employeeIdOrEmail, mode: 'insensitive' } },
+            { email: { equals: employeeIdOrEmail, mode: 'insensitive' } },
+          ],
+        },
+      });
+
+      if (!user) {
+        throw new AppError('unauthenticated', 401, 'Invalid credentials.');
+      }
+
+      const passwordOk = await verifyPassword(user.passwordHash, password);
+      if (!passwordOk) {
+        throw new AppError('unauthenticated', 401, 'Invalid credentials.');
+      }
+
+      if (user.deletedAt !== null) {
+        throw new AppError('account_deleted', 403, 'Account has been deleted.');
+      }
+
+      if (user.accountStatus !== AccountStatus.active) {
+        throw new AppError('account_inactive', 403, 'Account is not active.');
+      }
+
+      const accessToken = await signAccessToken({
+        userId: user.id,
+        role: Role.platformAdmin,
+      });
+
+      const refreshToken = generateOpaqueToken();
+
+      await prisma.$transaction([
+        prisma.refreshToken.create({
+          data: {
+            userId: user.id,
+            tokenHash: sha256Hex(refreshToken),
+            expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+            userAgent: req.headers['user-agent'] ?? null,
+            ipAddress: req.ip,
+          },
+        }),
+        prisma.user.update({
+          where: { id: user.id },
+          data: { lastLoginAt: new Date() },
+        }),
+      ]);
+
+      await writeAuditLog(prisma, {
+        companyId: null,
+        actorId: user.id,
+        action: 'platform_admin_login',
+        targetType: 'user',
+        targetId: user.id,
+        ipAddress: req.ip,
+      });
+
+      return {
+        accessToken,
+        refreshToken,
+        user: {
+          id: user.id,
+          displayName: user.displayName,
+          role: user.role,
+          companyId: user.companyId,
+          accountStatus: user.accountStatus,
+          mustChangePassword: user.mustChangePassword,
+        },
+      };
+    },
+  );
 
   typed.post(
     '/v1/auth/login',
