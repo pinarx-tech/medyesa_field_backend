@@ -59,6 +59,7 @@ export class DoctorRepo extends Repo {
   async create(input: {
     name: string;
     specialty: string;
+    clinicId?: string | null;
     clinicName?: string | null;
     phone?: string | null;
     email?: string | null;
@@ -77,12 +78,24 @@ export class DoctorRepo extends Repo {
       }
     }
 
+    let resolvedClinicName = input.clinicName ?? null;
+    if (input.clinicId) {
+      const clinic = await this.prisma.clinic.findFirst({
+        where: { companyId, id: input.clinicId, isArchived: false },
+      });
+      if (!clinic) {
+        throw new AppError('not_found', 404, 'Clinic not found.');
+      }
+      resolvedClinicName = resolvedClinicName ?? clinic.name;
+    }
+
     const doctor = await this.prisma.doctor.create({
       data: {
         companyId,
+        clinicId: input.clinicId ?? null,
         name: input.name,
         specialty: input.specialty,
-        clinicName: input.clinicName ?? null,
+        clinicName: resolvedClinicName,
         phone: input.phone ?? null,
         email: input.email ?? null,
         geofenceRadiusMeters: input.geofenceRadiusMeters,
@@ -123,6 +136,7 @@ export class DoctorRepo extends Repo {
     input: {
       name?: string;
       specialty?: string;
+      clinicId?: string | null;
       clinicName?: string | null;
       phone?: string | null;
       email?: string | null;
@@ -130,6 +144,14 @@ export class DoctorRepo extends Repo {
     },
   ) {
     const companyId = this.scopeCompany();
+    if (input.clinicId) {
+      const clinic = await this.prisma.clinic.findFirst({
+        where: { companyId, id: input.clinicId, isArchived: false },
+      });
+      if (!clinic) {
+        throw new AppError('not_found', 404, 'Clinic not found.');
+      }
+    }
     const result = await this.prisma.doctor.updateMany(/* companyId */ {
       where: { companyId, id: doctorId, deletedAt: null },
       data: input,

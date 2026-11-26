@@ -57,6 +57,7 @@ export async function buildApp(
           code: err.code,
           message: err.message,
           ...(err.fieldErrors ? { fieldErrors: err.fieldErrors } : {}),
+          ...(err.details ? { details: err.details } : {}),
           requestId: req.id,
         },
       });

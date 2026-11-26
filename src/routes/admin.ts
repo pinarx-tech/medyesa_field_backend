@@ -92,8 +92,8 @@ export async function registerAdminRoutes(
     },
     async (req, reply) => {
       const repo = new UserRepo(prisma, req.authUser!);
-      const user = await repo.createUser(req.body);
-      return reply.status(201).send({ user });
+      const { user, temporaryPassword } = await repo.createUser(req.body);
+      return reply.status(201).send({ user, temporaryPassword });
     },
   );
 

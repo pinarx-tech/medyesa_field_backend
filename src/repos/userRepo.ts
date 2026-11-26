@@ -1,8 +1,9 @@
 import { AccountStatus, Role } from '@prisma/client';
-import { AppError } from '../lib/errors.js';
 import { writeAuditLog } from '../lib/audit.js';
+import { AppError } from '../lib/errors.js';
 import { hashPassword } from '../lib/password.js';
 import { Repo } from '../lib/repo.js';
+import { generateTemporaryPassword } from '../lib/tempPassword.js';
 
 const SAFE_USER_SELECT = {
   id: true,
@@ -17,6 +18,9 @@ const SAFE_USER_SELECT = {
   lastLoginAt: true,
   createdAt: true,
   updatedAt: true,
+  company: {
+    select: { id: true, name: true, code: true },
+  },
 } as const;
 
 export class UserRepo extends Repo {
@@ -35,6 +39,13 @@ export class UserRepo extends Repo {
     });
     if (!company) {
       throw new AppError('not_found', 404, 'Company not found.');
+    }
+    if (!company.isActive) {
+      throw new AppError(
+        'business_rule_violation',
+        422,
+        'Cannot provision or reactivate accounts in an inactive company.',
+      );
     }
 
     const activeCount = await this.prisma.user.count({
@@ -69,8 +80,10 @@ export class UserRepo extends Repo {
     companyId?: number;
     role?: Role;
     status?: AccountStatus;
+    q?: string;
   }) {
     this.ensurePlatformAdmin();
+    const search = filter.q?.trim();
     return this.prisma.user.findMany({
       where: {
         deletedAt: null,
@@ -79,6 +92,15 @@ export class UserRepo extends Repo {
           : {}),
         ...(filter.role ? { role: filter.role } : {}),
         ...(filter.status ? { accountStatus: filter.status } : {}),
+        ...(search && search.length > 0
+          ? {
+              OR: [
+                { displayName: { contains: search, mode: 'insensitive' } },
+                { employeeId: { contains: search, mode: 'insensitive' } },
+                { email: { contains: search, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
       },
       select: SAFE_USER_SELECT,
       orderBy: { createdAt: 'desc' },
@@ -92,7 +114,7 @@ export class UserRepo extends Repo {
     displayName: string;
     phone?: string | null;
     role: 'headController' | 'mr';
-    initialPassword: string;
+    initialPassword?: string;
   }) {
     this.scopeCompanyExplicit(input.companyId);
     const targetRole =
@@ -117,7 +139,11 @@ export class UserRepo extends Repo {
       );
     }
 
-    const passwordHash = await hashPassword(input.initialPassword);
+    const generated = !input.initialPassword;
+    const plainPassword =
+      input.initialPassword ?? generateTemporaryPassword(input.displayName);
+    const passwordHash = await hashPassword(plainPassword);
+
     const user = await this.prisma.user.create({
       data: {
         companyId: input.companyId,
@@ -139,11 +165,18 @@ export class UserRepo extends Repo {
       action: 'user_created',
       targetType: 'user',
       targetId: user.id,
-      metadata: { employeeId: user.employeeId, role: user.role },
+      metadata: {
+        employeeId: user.employeeId,
+        role: user.role,
+        temporaryPasswordGenerated: generated,
+      },
       ipAddress: this.ctx.ipAddress,
     });
 
-    return user;
+    return {
+      user,
+      temporaryPassword: plainPassword,
+    };
   }
 
   async updateUser(
@@ -228,7 +261,7 @@ export class UserRepo extends Repo {
     return updated;
   }
 
-  async adminResetPassword(userId: string, newPassword: string) {
+  async adminResetPassword(userId: string, newPassword?: string) {
     this.ensurePlatformAdmin();
     const existing = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -237,7 +270,10 @@ export class UserRepo extends Repo {
       throw new AppError('not_found', 404, 'User not found.');
     }
 
-    const passwordHash = await hashPassword(newPassword);
+    const plainPassword =
+      newPassword ?? generateTemporaryPassword(existing.displayName);
+    const passwordHash = await hashPassword(plainPassword);
+
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: userId },
@@ -255,13 +291,16 @@ export class UserRepo extends Repo {
       action: 'user_password_reset_by_admin',
       targetType: 'user',
       targetId: userId,
+      metadata: { generatedByBackend: !newPassword },
       ipAddress: this.ctx.ipAddress,
     });
 
-    return { ok: true };
+    return {
+      ok: true,
+      temporaryPassword: plainPassword,
+    };
   }
 
-  /** Company-scoped MR list for Head Controllers. */
   async listCompanyMrs() {
     const companyId = this.scopeCompany();
     const mrs = await this.prisma.user.findMany({

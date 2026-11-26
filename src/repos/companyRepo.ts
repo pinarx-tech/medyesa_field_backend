@@ -1,6 +1,6 @@
 import { AccountStatus, Role, SubscriptionStatus } from '@prisma/client';
-import { AppError } from '../lib/errors.js';
 import { writeAuditLog } from '../lib/audit.js';
+import { AppError } from '../lib/errors.js';
 import { Repo } from '../lib/repo.js';
 
 export class CompanyRepo extends Repo {
@@ -39,6 +39,8 @@ export class CompanyRepo extends Repo {
         ...company,
         usedMrSeats,
         usedHcSeats,
+        availableMrSeats: Math.max(0, company.licensedMrSeats - usedMrSeats),
+        availableHcSeats: Math.max(0, company.licensedHcSeats - usedHcSeats),
       };
     });
   }
@@ -80,7 +82,13 @@ export class CompanyRepo extends Repo {
       ipAddress: this.ctx.ipAddress,
     });
 
-    return company;
+    return {
+      ...company,
+      usedMrSeats: 0,
+      usedHcSeats: 0,
+      availableMrSeats: company.licensedMrSeats,
+      availableHcSeats: company.licensedHcSeats,
+    };
   }
 
   async getDetail(companyId: number) {
@@ -123,6 +131,8 @@ export class CompanyRepo extends Repo {
       ...company,
       usedMrSeats,
       usedHcSeats,
+      availableMrSeats: Math.max(0, company.licensedMrSeats - usedMrSeats),
+      availableHcSeats: Math.max(0, company.licensedHcSeats - usedHcSeats),
       users,
     };
   }
@@ -143,6 +153,52 @@ export class CompanyRepo extends Repo {
     });
     if (!existing) {
       throw new AppError('not_found', 404, 'Company not found.');
+    }
+
+    // Seat-shrink protection: prevent lowering licensed seats below active occupied seats.
+    if (
+      input.licensedMrSeats !== undefined ||
+      input.licensedHcSeats !== undefined
+    ) {
+      const [activeMrs, activeHcs] = await Promise.all([
+        this.prisma.user.count({
+          where: {
+            companyId,
+            role: Role.mr,
+            accountStatus: AccountStatus.active,
+            deletedAt: null,
+          },
+        }),
+        this.prisma.user.count({
+          where: {
+            companyId,
+            role: Role.headController,
+            accountStatus: AccountStatus.active,
+            deletedAt: null,
+          },
+        }),
+      ]);
+
+      if (
+        input.licensedMrSeats !== undefined &&
+        input.licensedMrSeats < activeMrs
+      ) {
+        throw new AppError(
+          'business_rule_violation',
+          422,
+          `Cannot reduce licensed MR seats to ${input.licensedMrSeats} while ${activeMrs} active MR(s) occupy seats.`,
+        );
+      }
+      if (
+        input.licensedHcSeats !== undefined &&
+        input.licensedHcSeats < activeHcs
+      ) {
+        throw new AppError(
+          'business_rule_violation',
+          422,
+          `Cannot reduce licensed HC seats to ${input.licensedHcSeats} while ${activeHcs} active HC(s) occupy seats.`,
+        );
+      }
     }
 
     const updated = await this.prisma.company.update({

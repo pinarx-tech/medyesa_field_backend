@@ -208,6 +208,27 @@ export async function registerAuthRoutes(
         ipAddress: req.ip,
       });
 
+      if (user.companyId !== null) {
+        const companyRow = await prisma.company.findUnique({
+          where: { id: user.companyId },
+          select: { dataClassification: true },
+        });
+        await prisma.activityLog.create({
+          data: {
+            companyId: user.companyId,
+            actorId: user.id,
+            actorRole: user.role,
+            actorDisplayName: user.displayName,
+            actionType:
+              user.role === Role.headController ? 'admin_login' : 'mr_login',
+            subjectType: 'user',
+            subjectId: user.id,
+            subjectDisplayName: user.displayName,
+            dataClassification: companyRow?.dataClassification ?? 'production',
+          },
+        });
+      }
+
       return {
         accessToken,
         refreshToken,

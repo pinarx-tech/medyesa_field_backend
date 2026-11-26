@@ -57,6 +57,7 @@ export async function resetDatabase(prisma: PrismaClient): Promise<void> {
     prisma.mrTerritoryAssignment.deleteMany(),
     prisma.doctorClinicLocation.deleteMany(),
     prisma.doctor.deleteMany(),
+    prisma.clinic.deleteMany(),
     prisma.territory.deleteMany(),
     prisma.platformAdmin.deleteMany(),
     prisma.user.deleteMany(),

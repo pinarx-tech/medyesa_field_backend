@@ -21,17 +21,20 @@ export class AppError extends Error {
   public readonly code: ErrorCode;
   public readonly statusCode: number;
   public readonly fieldErrors?: FieldError[];
+  public readonly details?: Record<string, unknown>;
 
   constructor(
     code: ErrorCode,
     statusCode: number,
     message?: string,
     fieldErrors?: FieldError[],
+    details?: Record<string, unknown>,
   ) {
     super(message ?? code);
     this.name = 'AppError';
     this.code = code;
     this.statusCode = statusCode;
     this.fieldErrors = fieldErrors;
+    this.details = details;
   }
 }
