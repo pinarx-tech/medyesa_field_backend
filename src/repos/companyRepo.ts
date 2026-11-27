@@ -218,4 +218,203 @@ export class CompanyRepo extends Repo {
 
     return updated;
   }
+
+  /**
+   * Irreversibly deletes an entire pharma company and all company-owned
+   * operational, user, token, sync, and audit data inside one transaction.
+   */
+  async deletePermanent(
+    companyId: number,
+    options?: { beforeCommit?: () => Promise<void> | void },
+  ) {
+    this.scopeCompanyExplicit(companyId);
+
+    const deleted = await this.prisma.$transaction(
+      async (tx) => {
+        const company = await tx.company.findUnique({
+          where: { id: companyId },
+          select: { id: true },
+        });
+        if (!company) {
+          throw new AppError('not_found', 404, 'Company not found.');
+        }
+
+        const companyUsers = await tx.user.findMany({
+          where: { companyId },
+          select: { id: true },
+        });
+        const userIds = companyUsers.map((u) => u.id);
+
+        const passwordResetTokens =
+          userIds.length > 0
+            ? (
+                await tx.passwordResetToken.deleteMany({
+                  where: { userId: { in: userIds } },
+                })
+              ).count
+            : 0;
+
+        const refreshTokens =
+          userIds.length > 0
+            ? (
+                await tx.refreshToken.deleteMany({
+                  where: { userId: { in: userIds } },
+                })
+              ).count
+            : 0;
+
+        const syncOperations = (
+          await tx.syncOperation.deleteMany({
+            where:
+              userIds.length > 0
+                ? { OR: [{ companyId }, { actorId: { in: userIds } }] }
+                : { companyId },
+          })
+        ).count;
+
+        const auditLogs = (
+          await tx.auditLog.deleteMany({
+            where: {
+              OR: [
+                { companyId },
+                { targetType: 'company', targetId: String(companyId) },
+                ...(userIds.length > 0
+                  ? [
+                      { actorId: { in: userIds } },
+                      { targetType: 'user', targetId: { in: userIds } },
+                    ]
+                  : []),
+              ],
+            },
+          })
+        ).count;
+
+        const hcNotificationPrefs = (
+          await tx.hcNotificationPrefs.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const activityLogs = (
+          await tx.activityLog.deleteMany({
+            where:
+              userIds.length > 0
+                ? { OR: [{ companyId }, { actorId: { in: userIds } }] }
+                : { companyId },
+          })
+        ).count;
+
+        const visitNotes = (
+          await tx.visitNote.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        // Break self-referencing visit correction pointers before bulk deletion.
+        await tx.visit.updateMany({
+          where: { companyId, correctsVisitId: { not: null } },
+          data: { correctsVisitId: null },
+        });
+        const visits = (
+          await tx.visit.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const workDays = (
+          await tx.workDay.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const territoryDoctors = (
+          await tx.territoryDoctor.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const mrTerritoryAssignments = (
+          await tx.mrTerritoryAssignment.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const doctorClinicLocations = (
+          await tx.doctorClinicLocation.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const doctors = (
+          await tx.doctor.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const clinics = (
+          await tx.clinic.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const territories = (
+          await tx.territory.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        const users = (
+          await tx.user.deleteMany({
+            where: { companyId },
+          })
+        ).count;
+
+        await tx.company.delete({
+          where: { id: companyId },
+        });
+
+        // Minimal platform-level deletion trace with no retained company PII/details.
+        await tx.auditLog.create({
+          data: {
+            companyId: null,
+            actorId: this.ctx.userId,
+            action: 'company_permanently_deleted',
+            targetType: 'company',
+            targetId: String(companyId),
+            ipAddress: this.ctx.ipAddress ?? null,
+          },
+        });
+
+        if (options?.beforeCommit) {
+          await options.beforeCommit();
+        }
+
+        return {
+          users,
+          clinics,
+          doctors,
+          doctorClinicLocations,
+          territories,
+          territoryDoctors,
+          mrTerritoryAssignments,
+          workDays,
+          visits,
+          visitNotes,
+          activityLogs,
+          hcNotificationPrefs,
+          syncOperations,
+          refreshTokens,
+          passwordResetTokens,
+          auditLogs,
+        };
+      },
+      { maxWait: 10_000, timeout: 30_000 },
+    );
+
+    return {
+      ok: true,
+      deletedCompanyId: companyId,
+      deleted,
+    };
+  }
 }

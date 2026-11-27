@@ -72,6 +72,18 @@ export async function registerAdminRoutes(
     },
   );
 
+  typed.delete(
+    '/v1/admin/companies/:id',
+    {
+      preHandler: onlyPlatformAdmin,
+      schema: { params: companyIdParamSchema },
+    },
+    async (req) => {
+      const repo = new CompanyRepo(prisma, req.authUser!);
+      return repo.deletePermanent(req.params.id);
+    },
+  );
+
   typed.get(
     '/v1/admin/users',
     {
@@ -172,6 +184,18 @@ export async function registerAdminRoutes(
     async (req) => {
       const repo = new UserRepo(prisma, req.authUser!);
       return repo.adminResetPassword(req.params.id, req.body.newPassword);
+    },
+  );
+
+  typed.delete(
+    '/v1/admin/users/:id',
+    {
+      preHandler: onlyPlatformAdmin,
+      schema: { params: userIdParamSchema },
+    },
+    async (req) => {
+      const repo = new UserRepo(prisma, req.authUser!);
+      return repo.deletePermanent(req.params.id);
     },
   );
 }
