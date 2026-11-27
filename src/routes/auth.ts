@@ -430,15 +430,15 @@ export async function registerAuthRoutes(
           },
         });
         req.log.info(
-          { userId: user.id, stubTokenPrefix: resetToken.slice(0, 6) },
-          '[STUB] Password reset token created; email delivery not configured in Chunk 1.',
+          { userId: user.id },
+          'Password reset token generated; email delivery is not configured.',
         );
       }
 
       throw new AppError(
         'not_implemented',
         501,
-        'Email delivery is not configured in Chunk 1.',
+        'Password reset via email is unavailable. Contact your administrator or support.',
       );
     },
   );
