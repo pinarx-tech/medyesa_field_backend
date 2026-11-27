@@ -5,6 +5,13 @@ export const visitIdParamSchema = z.object({
   id: z.string().uuid(),
 });
 
+const isoDateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
+export const mrTodayQuerySchema = z.object({
+  date: z.string().regex(isoDateRegex, 'date must be YYYY-MM-DD').optional(),
+  tzOffsetMinutes: z.coerce.number().int().min(-720).max(840).default(330),
+});
+
 export const startWorkdayBodySchema = z.object({
   clientId: z.string().trim().min(1).max(128),
   startedAt: z.string().datetime(),

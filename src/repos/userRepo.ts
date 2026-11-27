@@ -576,7 +576,11 @@ export class UserRepo extends Repo {
     });
 
     const activeAssignments = await this.prisma.mrTerritoryAssignment.findMany(/* companyId */ {
-      where: { companyId, unassignedAt: null },
+      where: {
+        companyId,
+        unassignedAt: null,
+        territory: { companyId, isArchived: false },
+      },
       include: { territory: { select: { id: true, code: true, name: true } } },
     });
 

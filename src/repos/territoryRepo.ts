@@ -1,27 +1,107 @@
 import { Role } from '@prisma/client';
 import { writeAuditLog } from '../lib/audit.js';
+import { resolveDoctorClinicLocation } from '../lib/clinicLocation.js';
 import { AppError } from '../lib/errors.js';
 import { Repo } from '../lib/repo.js';
 
 export class TerritoryRepo extends Repo {
-  async listForCompany() {
+  async listForCompany(options: { includeArchived?: boolean } = {}) {
     const companyId = this.scopeCompany();
-    return this.prisma.territory.findMany(/* companyId */ {
-      where: { companyId },
+    const classification = this.scopeClassification();
+    const includeArchived = options.includeArchived === true;
+
+    const territories = await this.prisma.territory.findMany(/* companyId */ {
+      where: {
+        companyId,
+        dataClassification: classification,
+        ...(includeArchived ? {} : { isArchived: false }),
+      },
       include: {
         _count: {
           select: {
             mrAssignments: { where: { companyId, unassignedAt: null } },
-            territoryDoctors: { where: { companyId, unassignedAt: null } },
+            territoryDoctors: {
+              where: {
+                companyId,
+                unassignedAt: null,
+                doctor: {
+                  companyId,
+                  isArchived: false,
+                  deletedAt: null,
+                  dataClassification: classification,
+                },
+              },
+            },
+          },
+        },
+        territoryDoctors: {
+          where: {
+            companyId,
+            unassignedAt: null,
+            doctor: {
+              companyId,
+              isArchived: false,
+              deletedAt: null,
+              dataClassification: classification,
+            },
+          },
+          select: {
+            doctor: {
+              select: {
+                clinicId: true,
+                clinicName: true,
+                clinic: {
+                  select: {
+                    id: true,
+                    name: true,
+                    formattedAddress: true,
+                    landmark: true,
+                    phone: true,
+                    latitude: true,
+                    longitude: true,
+                    accuracyMeters: true,
+                    source: true,
+                  },
+                },
+                clinicLocations: {
+                  where: { companyId, isCurrent: true },
+                  take: 1,
+                  select: {
+                    id: true,
+                    clinicName: true,
+                    formattedAddress: true,
+                    latitude: true,
+                    longitude: true,
+                    accuracyMeters: true,
+                    source: true,
+                    status: true,
+                    isCurrent: true,
+                  },
+                },
+              },
+            },
           },
         },
       },
       orderBy: { name: 'asc' },
     });
+
+    return territories.map(({ territoryDoctors, ...t }) => {
+      const locationPendingCount = territoryDoctors.filter(
+        (link) =>
+          resolveDoctorClinicLocation(link.doctor).locationStatus !==
+          'configured',
+      ).length;
+      return {
+        ...t,
+        locationPendingCount,
+      };
+    });
   }
 
   async getDetail(territoryId: string) {
     const companyId = this.scopeCompany();
+    const classification = this.scopeClassification();
     const territory = await this.prisma.territory.findFirst(/* companyId */ {
       where: { companyId, id: territoryId },
     });
@@ -29,25 +109,41 @@ export class TerritoryRepo extends Repo {
       throw new AppError('not_found', 404, 'Territory not found.');
     }
 
-    const [doctorLinks, mrAssignments] = await Promise.all([
+    const [
+      doctorLinks,
+      mrAssignments,
+      totalMrHistory,
+      totalDocHistory,
+      totalVisits,
+    ] = await Promise.all([
       this.prisma.territoryDoctor.findMany(/* companyId */ {
         where: { companyId, territoryId, unassignedAt: null },
         include: {
           doctor: {
-            select: {
-              id: true,
-              name: true,
-              specialty: true,
-              clinicName: true,
-              isArchived: true,
-              deletedAt: true,
+            include: {
+              clinic: true,
+              clinicLocations: {
+                where: { companyId, isCurrent: true },
+                orderBy: { capturedAt: 'desc' },
+                take: 1,
+              },
             },
           },
         },
+        orderBy: { doctor: { name: 'asc' } },
       }),
       this.prisma.mrTerritoryAssignment.findMany(/* companyId */ {
         where: { companyId, territoryId, unassignedAt: null },
         select: { mrId: true, assignedAt: true },
+      }),
+      this.prisma.mrTerritoryAssignment.count({
+        where: { companyId, territoryId },
+      }),
+      this.prisma.territoryDoctor.count({
+        where: { companyId, territoryId },
+      }),
+      this.prisma.visit.count({
+        where: { companyId, territoryIdAtVisit: territoryId },
       }),
     ]);
 
@@ -62,15 +158,41 @@ export class TerritoryRepo extends Repo {
               displayName: true,
               accountStatus: true,
             },
+            orderBy: { displayName: 'asc' },
           })
         : [];
 
+    const doctors = doctorLinks
+      .filter(
+        (l) =>
+          !l.doctor.isArchived &&
+          l.doctor.deletedAt === null &&
+          l.doctor.dataClassification === classification,
+      )
+      .map((l) => {
+        const loc = resolveDoctorClinicLocation(l.doctor);
+        return {
+          id: l.doctor.id,
+          name: l.doctor.name,
+          specialty: l.doctor.specialty,
+          clinicId: l.doctor.clinicId,
+          clinicName: loc.clinicName ?? l.doctor.clinicName,
+          phone: l.doctor.phone,
+          email: l.doctor.email,
+          geofenceRadiusMeters: l.doctor.geofenceRadiusMeters,
+          isArchived: l.doctor.isArchived,
+          clinicLocation: loc,
+          clinic: l.doctor.clinic,
+          clinicLocations: l.doctor.clinicLocations,
+        };
+      });
+
     return {
       territory,
-      doctors: doctorLinks
-        .filter((l) => !l.doctor.isArchived && l.doctor.deletedAt === null)
-        .map((l) => l.doctor),
+      doctors,
       mrs,
+      canDeleteEmpty:
+        totalMrHistory === 0 && totalDocHistory === 0 && totalVisits === 0,
     };
   }
 
@@ -81,6 +203,7 @@ export class TerritoryRepo extends Repo {
     notes?: string | null;
   }) {
     const companyId = this.scopeCompany();
+    const classification = this.scopeClassification();
     const existing = await this.prisma.territory.findFirst(/* companyId */ {
       where: { companyId, code: input.code },
     });
@@ -96,6 +219,7 @@ export class TerritoryRepo extends Repo {
         description: input.description ?? null,
         notes: input.notes ?? null,
         createdByHeadControllerId: this.ctx.userId,
+        dataClassification: classification,
       },
     });
 
@@ -110,6 +234,7 @@ export class TerritoryRepo extends Repo {
         subjectId: territory.id,
         subjectDisplayName: territory.name,
         territoryId: territory.id,
+        dataClassification: classification,
       },
     });
 
@@ -162,19 +287,118 @@ export class TerritoryRepo extends Repo {
         subjectId: territoryId,
         subjectDisplayName: updated?.name ?? territoryId,
         territoryId,
+        dataClassification: this.scopeClassification(),
       },
     });
 
     return updated;
   }
 
+  /**
+   * Safely hard-deletes a truly empty territory with ZERO active or historical
+   * MR assignments, doctor links, visits, or operational history.
+   * Never deletes historical records — returns 422 recommending Archive instead.
+   */
+  async deleteEmpty(territoryId: string) {
+    const companyId = this.scopeCompany();
+
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      const territory = await tx.territory.findFirst({
+        where: { companyId, id: territoryId },
+      });
+      if (!territory) {
+        throw new AppError('not_found', 404, 'Territory not found.');
+      }
+
+      const [
+        mrAssignmentsCount,
+        territoryDoctorsCount,
+        visitsCount,
+        operationalActivityCount,
+      ] = await Promise.all([
+        tx.mrTerritoryAssignment.count({
+          where: { companyId, territoryId },
+        }),
+        tx.territoryDoctor.count({
+          where: { companyId, territoryId },
+        }),
+        tx.visit.count({
+          where: { companyId, territoryIdAtVisit: territoryId },
+        }),
+        tx.activityLog.count({
+          where: {
+            companyId,
+            territoryId,
+            actionType: { notIn: ['territory_created', 'territory_archived'] },
+          },
+        }),
+      ]);
+
+      if (
+        mrAssignmentsCount > 0 ||
+        territoryDoctorsCount > 0 ||
+        visitsCount > 0 ||
+        operationalActivityCount > 0
+      ) {
+        throw new AppError(
+          'business_rule_violation',
+          422,
+          'This territory has active or historical assignments, doctors, or visits and cannot be deleted. Archive it instead.',
+          undefined,
+          {
+            canArchive: true,
+            mrAssignmentsCount,
+            territoryDoctorsCount,
+            visitsCount,
+            operationalActivityCount,
+          },
+        );
+      }
+
+      // Preserve creation/archive audit logs intact while unlinking the deleted ID.
+      await tx.activityLog.updateMany({
+        where: { companyId, territoryId },
+        data: { territoryId: null },
+      });
+
+      await tx.territory.deleteMany({
+        where: { companyId, id: territoryId },
+      });
+
+      return territory;
+    });
+
+    await writeAuditLog(this.prisma, {
+      companyId,
+      actorId: this.ctx.userId,
+      action: 'territory_deleted',
+      targetType: 'territory',
+      targetId: deleted.id,
+      metadata: { code: deleted.code, name: deleted.name },
+      ipAddress: this.ctx.ipAddress,
+    });
+
+    return {
+      ok: true,
+      deletedId: deleted.id,
+      deletedTerritoryId: deleted.id,
+    };
+  }
+
   async addDoctor(territoryId: string, doctorId: string) {
     const companyId = this.scopeCompany();
     const territory = await this.prisma.territory.findFirst(/* companyId */ {
-      where: { companyId, id: territoryId, isArchived: false },
+      where: { companyId, id: territoryId },
     });
     if (!territory) {
       throw new AppError('not_found', 404, 'Territory not found.');
+    }
+    if (territory.isArchived) {
+      throw new AppError(
+        'business_rule_violation',
+        422,
+        'Cannot assign a doctor to an archived territory.',
+      );
     }
 
     const doctor = await this.prisma.doctor.findFirst(/* companyId */ {
@@ -211,6 +435,7 @@ export class TerritoryRepo extends Repo {
         subjectId: doctor.id,
         subjectDisplayName: doctor.name,
         territoryId,
+        dataClassification: this.scopeClassification(),
       },
     });
 
@@ -237,6 +462,7 @@ export class TerritoryRepo extends Repo {
         subjectType: 'doctor',
         subjectId: doctorId,
         territoryId,
+        dataClassification: this.scopeClassification(),
       },
     });
 
@@ -277,7 +503,7 @@ export class TerritoryRepo extends Repo {
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      await tx.mrTerritoryAssignment.updateMany(/* companyId */ {
+      await tx.mrTerritoryAssignment.updateMany({
         where: { companyId, mrId, unassignedAt: null },
         data: { unassignedAt: now },
       });
@@ -318,6 +544,7 @@ export class TerritoryRepo extends Repo {
         subjectDisplayName: mr.displayName,
         territoryId,
         detailsJson: auditPayload,
+        dataClassification: this.scopeClassification(),
       },
     });
 

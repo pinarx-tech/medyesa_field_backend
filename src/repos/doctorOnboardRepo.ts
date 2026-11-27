@@ -41,13 +41,7 @@ export interface OnboardDoctorInput {
 export class DoctorOnboardRepo extends Repo {
   async onboard(input: OnboardDoctorInput) {
     const companyId = this.scopeCompany();
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: { dataClassification: true },
-    });
-    if (!company) {
-      throw new AppError('not_found', 404, 'Company not found.');
-    }
+    const classification = this.scopeClassification();
 
     const opKey = input.clientId ? `${companyId}:onboard:${input.clientId}` : null;
     if (opKey) {
@@ -70,7 +64,6 @@ export class DoctorOnboardRepo extends Repo {
     }
 
     const clinicHelper = new ClinicRepo(this.prisma, this.ctx);
-    const classification = company.dataClassification;
     const now = new Date();
 
     const result = await this.prisma.$transaction(async (tx) => {

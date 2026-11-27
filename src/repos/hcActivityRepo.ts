@@ -39,15 +39,7 @@ export class HcActivityRepo extends Repo {
     limit: number;
   }) {
     const companyId = this.scopeCompany();
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: { dataClassification: true },
-    });
-    if (!company) {
-      throw new AppError('not_found', 404, 'Company not found.');
-    }
-
-    const classification = company.dataClassification;
+    const classification = this.scopeClassification();
     const window = resolveDayWindow({
       date: filter.date,
       tzOffsetMinutes: filter.tzOffsetMinutes,
@@ -91,7 +83,11 @@ export class HcActivityRepo extends Repo {
         select: { id: true, name: true, isArchived: true },
       }),
       this.prisma.mrTerritoryAssignment.findMany(/* companyId */ {
-        where: { companyId, unassignedAt: null },
+        where: {
+          companyId,
+          unassignedAt: null,
+          territory: { companyId, isArchived: false },
+        },
         select: { mrId: true, territoryId: true },
       }),
     ]);

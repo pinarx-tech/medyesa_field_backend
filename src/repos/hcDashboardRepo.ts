@@ -13,24 +13,17 @@ export type MrWorkdayStatus =
 export class HcDashboardRepo extends Repo {
   async getDashboard(input: { date?: string; tzOffsetMinutes?: number }) {
     const companyId = this.scopeCompany();
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: {
-        id: true,
-        name: true,
-        code: true,
-        dataClassification: true,
-      },
-    });
-    if (!company) {
-      throw new AppError('not_found', 404, 'Company not found.');
-    }
+    const allowedClassification = this.scopeClassification();
+    const company = {
+      id: companyId,
+      name: this.ctx.companyName ?? 'Company',
+      code: this.ctx.companyCode ?? `company_${companyId}`,
+    };
 
     const window = resolveDayWindow({
       date: input.date,
       tzOffsetMinutes: input.tzOffsetMinutes,
     });
-    const allowedClassification = company.dataClassification;
 
     // 1. Active MRs belonging strictly to this company.
     const mrs = await this.prisma.user.findMany({
@@ -184,6 +177,7 @@ export class HcDashboardRepo extends Repo {
     let mrsCurrentlyWorking = 0;
     let mrsNotStarted = 0;
     let mrsEndedToday = 0;
+    let visitsCompletedToday = 0;
     let visitsPendingToday = 0;
 
     const mrSummaries = mrs.map((mr) => {
@@ -202,10 +196,12 @@ export class HcDashboardRepo extends Repo {
         }
       }
 
+      const mrCompletedAssigned = visitedAssignedDoctorIds.size;
       const mrPendingVisits = Math.max(
         0,
-        assignedDoctorIds.size - visitedAssignedDoctorIds.size,
+        assignedDoctorIds.size - mrCompletedAssigned,
       );
+      visitsCompletedToday += mrCompletedAssigned;
       visitsPendingToday += mrPendingVisits;
 
       const wd = workDayByMr.get(mr.id) ?? null;
@@ -242,7 +238,7 @@ export class HcDashboardRepo extends Repo {
         autoClosed: wd?.autoClosed ?? false,
         reopenedAt: wd?.reopenedAt?.toISOString() ?? null,
         assignedDoctorsCount: assignedDoctorIds.size,
-        visitsCompletedToday: mrCompletedVisits.length,
+        visitsCompletedToday: mrCompletedAssigned,
         visitsPendingToday: mrPendingVisits,
         syncFailuresCount: mrFailedSyncs,
         lastSyncedAt: lastSyncedAt?.toISOString() ?? null,
@@ -277,7 +273,7 @@ export class HcDashboardRepo extends Repo {
         mrsCurrentlyWorking,
         mrsNotStarted,
         mrsEndedToday,
-        visitsCompletedToday: effectiveCompletedVisits.length,
+        visitsCompletedToday,
         visitsPendingToday,
         syncFailuresCount: failedSyncOps.length,
       },

@@ -1,5 +1,6 @@
 import { Prisma, SyncStatus, VisitVerificationStatus } from '@prisma/client';
 import { createHash } from 'node:crypto';
+import { resolveDayWindow } from '../lib/dateWindow.js';
 import { AppError } from '../lib/errors.js';
 import { Repo } from '../lib/repo.js';
 import { DoctorRepo } from './doctorRepo.js';
@@ -37,29 +38,52 @@ export class VisitRepo extends Repo {
     return `${companyId}:${clientId}`;
   }
 
-  async getTodayForMr() {
+  /**
+   * Single-round-trip MR hydration payload using IST/client `tzOffsetMinutes`
+   * day window (fixes UTC midnight mismatch between 00:00 and 05:30 IST).
+   */
+  async getTodayForMr(input: { date?: string; tzOffsetMinutes?: number } = {}) {
     const companyId = this.scopeCompany();
     const mrId = this.scopeSelf(this.ctx.userId);
-    const todayStart = startOfUtcDay(new Date());
+    const classification = this.scopeClassification();
+    const window = resolveDayWindow({
+      date: input.date,
+      tzOffsetMinutes: input.tzOffsetMinutes,
+    });
 
     const doctorRepo = new DoctorRepo(this.prisma, this.ctx);
-    const doctors = await doctorRepo.listForMrSelf();
 
-    const activeWorkDay = await this.prisma.workDay.findFirst(/* companyId */ {
-      where: { companyId, mrId, startedAt: { gte: todayStart } },
-      orderBy: { startedAt: 'desc' },
-    });
-
-    const visits = await this.prisma.visit.findMany(/* companyId */ {
-      where: { companyId, mrId, capturedAtClient: { gte: todayStart } },
-      include: { note: true },
-      orderBy: { capturedAtClient: 'asc' },
-    });
+    const [mrContext, activeWorkDay, visits] = await Promise.all([
+      doctorRepo.listForMrSelfWithContext(),
+      this.prisma.workDay.findFirst(/* companyId */ {
+        where: {
+          companyId,
+          mrId,
+          dataClassification: classification,
+          startedAt: { gte: window.startUtc, lt: window.endUtc },
+        },
+        orderBy: { startedAt: 'desc' },
+      }),
+      this.prisma.visit.findMany(/* companyId */ {
+        where: {
+          companyId,
+          mrId,
+          dataClassification: classification,
+          capturedAtClient: { gte: window.startUtc, lt: window.endUtc },
+        },
+        include: { note: true },
+        orderBy: { capturedAtClient: 'asc' },
+      }),
+    ]);
 
     return {
-      date: todayStart.toISOString().slice(0, 10),
+      date: window.date,
+      company: mrContext.company,
+      activeTerritory: mrContext.activeTerritory,
+      territory: mrContext.territory,
+      assignment: mrContext.assignment,
       workDay: activeWorkDay,
-      doctors,
+      doctors: mrContext.doctors,
       visits,
     };
   }
@@ -67,6 +91,7 @@ export class VisitRepo extends Repo {
   async startWorkDay(input: { clientId: string; startedAt: string }) {
     const companyId = this.scopeCompany();
     const mrId = this.scopeSelf(this.ctx.userId);
+    const classification = this.scopeClassification();
     const opKey = this.syncKey(companyId, input.clientId);
 
     const existingOp = await this.prisma.syncOperation.findUnique({
@@ -86,6 +111,7 @@ export class VisitRepo extends Repo {
         companyId,
         mrId,
         startedAt: new Date(input.startedAt),
+        dataClassification: classification,
       },
     });
 
@@ -120,6 +146,7 @@ export class VisitRepo extends Repo {
         actionType: 'day_start',
         subjectType: 'workDay',
         subjectId: workDay.id,
+        dataClassification: classification,
       },
     });
 
@@ -201,6 +228,7 @@ export class VisitRepo extends Repo {
         subjectType: 'workDay',
         subjectId: resolvedWorkDayId,
         detailsJson: { autoClosed: input.autoClosed },
+        dataClassification: this.scopeClassification(),
       },
     });
 
@@ -228,6 +256,7 @@ export class VisitRepo extends Repo {
   }) {
     const companyId = this.scopeCompany();
     const mrId = this.scopeSelf(this.ctx.userId);
+    const classification = this.scopeClassification();
     const opKey = this.syncKey(companyId, input.clientId);
 
     // 1. Idempotency check by clientId (409 on conflicting payload).
@@ -313,6 +342,7 @@ export class VisitRepo extends Repo {
           territoryIdAtVisit: input.territoryIdAtVisit ?? null,
           correctsVisitId: input.correctsVisitId ?? null,
           capturedAtClient: capturedAt,
+          dataClassification: classification,
         },
       });
 
@@ -356,6 +386,7 @@ export class VisitRepo extends Repo {
           subjectId: created.id,
           subjectDisplayName: doctor.name,
           territoryId: input.territoryIdAtVisit ?? null,
+          dataClassification: classification,
           detailsJson: {
             verificationStatus: input.checkInVerificationStatus,
             distanceMeters: input.checkInDistanceMeters ?? null,
@@ -402,7 +433,7 @@ export class VisitRepo extends Repo {
 
     const note = existing
       ? await this.prisma.visitNote.update(/* companyId */ {
-          where: { id: existing.id },
+          where: { id: existing.id, companyId },
           data: { noteText: trimmed },
         })
       : await this.prisma.visitNote.create({
