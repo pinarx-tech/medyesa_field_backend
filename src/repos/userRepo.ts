@@ -301,6 +301,272 @@ export class UserRepo extends Repo {
     };
   }
 
+  /**
+   * Irreversibly deletes an individual HC or MR account and all user-owned
+   * tokens, sync ops, preferences, workdays, visits, notes, and activity logs,
+   * while preserving unrelated employees and shared company entities cleanly.
+   */
+  async deletePermanent(
+    userId: string,
+    options?: { beforeCommit?: () => Promise<void> | void },
+  ) {
+    this.ensurePlatformAdmin();
+
+    if (userId === this.ctx.userId) {
+      throw new AppError(
+        'forbidden',
+        403,
+        'Administrators cannot permanently delete their own account.',
+      );
+    }
+
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            companyId: true,
+            role: true,
+          },
+        });
+
+        if (!existing) {
+          throw new AppError('not_found', 404, 'User not found.');
+        }
+
+        if (
+          existing.role !== Role.headController &&
+          existing.role !== Role.mr
+        ) {
+          throw new AppError(
+            'forbidden',
+            403,
+            'Only Head Controller and MR accounts can be permanently deleted.',
+          );
+        }
+
+        const companyId = existing.companyId;
+        const companyScope = companyId !== null ? { companyId } : {};
+
+        const userVisits = await tx.visit.findMany({
+          where: { ...companyScope, mrId: userId },
+          select: { id: true },
+        });
+        const visitIds = userVisits.map((v) => v.id);
+
+        const userWorkDays = await tx.workDay.findMany({
+          where: { ...companyScope, mrId: userId },
+          select: { id: true },
+        });
+        const workDayIds = userWorkDays.map((w) => w.id);
+
+        const passwordResetTokens = (
+          await tx.passwordResetToken.deleteMany({
+            where: { userId },
+          })
+        ).count;
+
+        const refreshTokens = (
+          await tx.refreshToken.deleteMany({
+            where: { userId },
+          })
+        ).count;
+
+        const syncOperations = (
+          await tx.syncOperation.deleteMany({
+            where: { ...companyScope, actorId: userId },
+          })
+        ).count;
+
+        const hcNotificationPrefs = (
+          await tx.hcNotificationPrefs.deleteMany({
+            where: { ...companyScope, headControllerId: userId },
+          })
+        ).count;
+
+        let visitNotes = 0;
+        let visits = 0;
+        if (visitIds.length > 0) {
+          // Break any incoming or internal VisitCorrection links before deletion.
+          await tx.visit.updateMany({
+            where: { ...companyScope, correctsVisitId: { in: visitIds } },
+            data: { correctsVisitId: null },
+          });
+          await tx.visit.updateMany({
+            where: {
+              ...companyScope,
+              id: { in: visitIds },
+              correctsVisitId: { not: null },
+            },
+            data: { correctsVisitId: null },
+          });
+
+          visitNotes = (
+            await tx.visitNote.deleteMany({
+              where: { ...companyScope, visitId: { in: visitIds } },
+            })
+          ).count;
+
+          visits = (
+            await tx.visit.deleteMany({
+              where: { ...companyScope, id: { in: visitIds } },
+            })
+          ).count;
+        }
+
+        let workDays = 0;
+        if (workDayIds.length > 0) {
+          await tx.visit.updateMany({
+            where: { ...companyScope, workDayId: { in: workDayIds } },
+            data: { workDayId: null },
+          });
+          workDays = (
+            await tx.workDay.deleteMany({
+              where: { ...companyScope, id: { in: workDayIds } },
+            })
+          ).count;
+        }
+
+        // Clear nullable reopenedByUserId attribution on surviving company workdays.
+        await tx.workDay.updateMany({
+          where: { ...companyScope, reopenedByUserId: userId },
+          data: { reopenedByUserId: null },
+        });
+
+        const mrTerritoryAssignments = (
+          await tx.mrTerritoryAssignment.deleteMany({
+            where: { ...companyScope, mrId: userId },
+          })
+        ).count;
+
+        // Clean up HC references on surviving shared company entities without leaving dangling IDs.
+        let territoriesUnlinked = 0;
+        let mrAssignmentsReattributed = 0;
+        let territoryDoctorsReattributed = 0;
+        let doctorLocationsReattributed = 0;
+
+        if (companyId !== null) {
+          territoriesUnlinked = (
+            await tx.territory.updateMany({
+              where: { companyId, createdByHeadControllerId: userId },
+              data: { createdByHeadControllerId: null },
+            })
+          ).count;
+
+          const survivingHc = await tx.user.findFirst({
+            where: {
+              companyId,
+              id: { not: userId },
+              role: Role.headController,
+              deletedAt: null,
+            },
+            orderBy: [{ accountStatus: 'asc' }, { createdAt: 'asc' }],
+            select: { id: true },
+          });
+          const replacementAttributionId = survivingHc?.id ?? this.ctx.userId;
+
+          mrAssignmentsReattributed = (
+            await tx.mrTerritoryAssignment.updateMany({
+              where: { companyId, assignedByHeadControllerId: userId },
+              data: { assignedByHeadControllerId: replacementAttributionId },
+            })
+          ).count;
+
+          territoryDoctorsReattributed = (
+            await tx.territoryDoctor.updateMany({
+              where: { companyId, assignedByHeadControllerId: userId },
+              data: { assignedByHeadControllerId: replacementAttributionId },
+            })
+          ).count;
+
+          doctorLocationsReattributed = (
+            await tx.doctorClinicLocation.updateMany({
+              where: { companyId, capturedByUserId: userId },
+              data: { capturedByUserId: replacementAttributionId },
+            })
+          ).count;
+        }
+
+        const deletedSubjectIds = [...visitIds, ...workDayIds];
+        const activityLogs = (
+          await tx.activityLog.deleteMany({
+            where: {
+              OR: [
+                { actorId: userId },
+                { ...companyScope, subjectType: 'user', subjectId: userId },
+                ...(deletedSubjectIds.length > 0
+                  ? [{ ...companyScope, subjectId: { in: deletedSubjectIds } }]
+                  : []),
+              ],
+            },
+          })
+        ).count;
+
+        const auditLogs = (
+          await tx.auditLog.deleteMany({
+            where: {
+              OR: [
+                { actorId: userId },
+                { targetType: 'user', targetId: userId },
+              ],
+            },
+          })
+        ).count;
+
+        await tx.user.delete({
+          where: { id: userId },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            companyId: existing.companyId,
+            actorId: this.ctx.userId,
+            action: 'user_permanently_deleted',
+            targetType: 'user',
+            targetId: userId,
+            metadata: { role: existing.role },
+            ipAddress: this.ctx.ipAddress ?? null,
+          },
+        });
+
+        if (options?.beforeCommit) {
+          await options.beforeCommit();
+        }
+
+        return {
+          role: existing.role,
+          companyId: existing.companyId,
+          deleted: {
+            passwordResetTokens,
+            refreshTokens,
+            syncOperations,
+            hcNotificationPrefs,
+            visitNotes,
+            visits,
+            workDays,
+            mrTerritoryAssignments,
+            activityLogs,
+            auditLogs,
+            territoriesUnlinked,
+            mrAssignmentsReattributed,
+            territoryDoctorsReattributed,
+            doctorLocationsReattributed,
+          },
+        };
+      },
+      { maxWait: 10_000, timeout: 30_000 },
+    );
+
+    return {
+      ok: true,
+      deletedUserId: userId,
+      deletedRole: result.role,
+      companyId: result.companyId,
+      deleted: result.deleted,
+    };
+  }
+
   async listCompanyMrs() {
     const companyId = this.scopeCompany();
     const mrs = await this.prisma.user.findMany({
