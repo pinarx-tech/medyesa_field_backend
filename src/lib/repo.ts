@@ -1,9 +1,12 @@
-import { PrismaClient, Role } from '@prisma/client';
+import { DataClassification, PrismaClient, Role } from '@prisma/client';
 import { AppError } from './errors.js';
 
 export interface RequestContext {
   userId: string;
   companyId: number | null;
+  companyName: string | null;
+  companyCode: string | null;
+  companyClassification: DataClassification;
   role: Role;
   employeeId: string;
   displayName: string;
@@ -26,6 +29,11 @@ export class Repo {
       );
     }
     return this.ctx.companyId;
+  }
+
+  /** Returns the authenticated company's classification without an extra DB round-trip. */
+  protected scopeClassification(): DataClassification {
+    return this.ctx.companyClassification;
   }
 
   /** For platform admins operating explicitly across companies. */

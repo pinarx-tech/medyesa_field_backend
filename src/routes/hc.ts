@@ -22,11 +22,13 @@ import {
   createTerritoryBodySchema,
   hcActivityQuerySchema,
   hcDateQuerySchema,
+  hcTerritoryListQuerySchema,
   onboardDoctorBodySchema,
   reopenWorkdayBodySchema,
   territoryDoctorParamsSchema,
   updateClinicBodySchema,
   updateDoctorBodySchema,
+  updateDoctorLocationBodySchema,
   updateNotificationPrefsBodySchema,
   updateTerritoryBodySchema,
   uuidIdParamSchema,
@@ -55,6 +57,15 @@ export async function registerHcRoutes(
     const repo = new DoctorRepo(prisma, req.authUser!);
     return { doctors: await repo.listForCompany() };
   });
+
+  typed.get(
+    '/v1/hc/doctors/:id',
+    { preHandler: onlyHc, schema: { params: uuidIdParamSchema } },
+    async (req) => {
+      const repo = new DoctorRepo(prisma, req.authUser!);
+      return { doctor: await repo.getDetailForCompany(req.params.id) };
+    },
+  );
 
   typed.post(
     '/v1/hc/doctors',
@@ -85,6 +96,23 @@ export async function registerHcRoutes(
     async (req) => {
       const repo = new DoctorRepo(prisma, req.authUser!);
       return { doctor: await repo.update(req.params.id, req.body) };
+    },
+  );
+
+  typed.patch(
+    '/v1/hc/doctors/:id/location',
+    {
+      preHandler: onlyHc,
+      schema: {
+        params: uuidIdParamSchema,
+        body: updateDoctorLocationBodySchema,
+      },
+    },
+    async (req) => {
+      const repo = new DoctorRepo(prisma, req.authUser!);
+      return {
+        doctor: await repo.updateLocationForCompany(req.params.id, req.body),
+      };
     },
   );
 
@@ -129,10 +157,17 @@ export async function registerHcRoutes(
   );
 
   // Territories & MR Territory Reassignment
-  typed.get('/v1/hc/territories', { preHandler: onlyHc }, async (req) => {
-    const repo = new TerritoryRepo(prisma, req.authUser!);
-    return { territories: await repo.listForCompany() };
-  });
+  typed.get(
+    '/v1/hc/territories',
+    {
+      preHandler: onlyHc,
+      schema: { querystring: hcTerritoryListQuerySchema },
+    },
+    async (req) => {
+      const repo = new TerritoryRepo(prisma, req.authUser!);
+      return { territories: await repo.listForCompany(req.query) };
+    },
+  );
 
   typed.get(
     '/v1/hc/territories/:id',
@@ -171,6 +206,15 @@ export async function registerHcRoutes(
     async (req) => {
       const repo = new TerritoryRepo(prisma, req.authUser!);
       return { territory: await repo.archive(req.params.id) };
+    },
+  );
+
+  typed.delete(
+    '/v1/hc/territories/:id',
+    { preHandler: onlyHc, schema: { params: uuidIdParamSchema } },
+    async (req) => {
+      const repo = new TerritoryRepo(prisma, req.authUser!);
+      return repo.deleteEmpty(req.params.id);
     },
   );
 

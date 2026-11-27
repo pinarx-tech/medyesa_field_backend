@@ -16,13 +16,7 @@ export class HcMonitoringRepo extends Repo {
     input: { date?: string; tzOffsetMinutes?: number },
   ) {
     const companyId = this.scopeCompany();
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: { dataClassification: true },
-    });
-    if (!company) {
-      throw new AppError('not_found', 404, 'Company not found.');
-    }
+    const classification = this.scopeClassification();
 
     const mr = await this.prisma.user.findFirst({
       where: { companyId, id: mrId, role: Role.mr, deletedAt: null },
@@ -40,7 +34,6 @@ export class HcMonitoringRepo extends Repo {
       throw new AppError('not_found', 404, 'Medical Representative not found.');
     }
 
-    const classification = company.dataClassification;
     const window = resolveDayWindow({
       date: input.date,
       tzOffsetMinutes: input.tzOffsetMinutes,

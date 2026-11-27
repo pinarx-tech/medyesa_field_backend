@@ -30,20 +30,14 @@ function haversineMeters(
 export class ClinicRepo extends Repo {
   async listForCompany(query?: string) {
     const companyId = this.scopeCompany();
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: { dataClassification: true },
-    });
-    if (!company) {
-      throw new AppError('not_found', 404, 'Company not found.');
-    }
+    const classification = this.scopeClassification();
 
     const q = query?.trim();
     const clinics = await this.prisma.clinic.findMany({
       where: {
         companyId,
         isArchived: false,
-        dataClassification: company.dataClassification,
+        dataClassification: classification,
         ...(q && q.length > 0
           ? {
               OR: [
@@ -141,13 +135,7 @@ export class ClinicRepo extends Repo {
     source: 'gps' | 'search' | 'manual';
   }) {
     const companyId = this.scopeCompany();
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: { dataClassification: true },
-    });
-    if (!company) {
-      throw new AppError('not_found', 404, 'Company not found.');
-    }
+    const classification = this.scopeClassification();
 
     const clinic = await this.prisma.$transaction(async (tx) => {
       const duplicate = await this.findDuplicateInCompany(tx, companyId, input);
@@ -177,7 +165,7 @@ export class ClinicRepo extends Repo {
           longitude: input.longitude ?? null,
           accuracyMeters: input.accuracyMeters ?? null,
           source: input.source,
-          dataClassification: company.dataClassification,
+          dataClassification: classification,
         },
       });
 
@@ -191,7 +179,7 @@ export class ClinicRepo extends Repo {
           subjectType: 'clinic',
           subjectId: created.id,
           subjectDisplayName: created.name,
-          dataClassification: company.dataClassification,
+          dataClassification: classification,
         },
       });
 

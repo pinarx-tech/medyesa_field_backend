@@ -8,6 +8,7 @@ import { VisitRepo } from '../repos/visitRepo.js';
 import {
   createVisitBodySchema,
   endWorkdayBodySchema,
+  mrTodayQuerySchema,
   startWorkdayBodySchema,
   syncBatchBodySchema,
   upsertVisitNoteBodySchema,
@@ -22,10 +23,14 @@ export async function registerMrRoutes(
   const authenticate = buildAuthPreHandler(prisma);
   const onlyMr = [authenticate, requireRoles([Role.mr])];
 
-  typed.get('/v1/mr/today', { preHandler: onlyMr }, async (req) => {
-    const repo = new VisitRepo(prisma, req.authUser!);
-    return repo.getTodayForMr();
-  });
+  typed.get(
+    '/v1/mr/today',
+    { preHandler: onlyMr, schema: { querystring: mrTodayQuerySchema } },
+    async (req) => {
+      const repo = new VisitRepo(prisma, req.authUser!);
+      return repo.getTodayForMr(req.query);
+    },
+  );
 
   typed.post(
     '/v1/mr/workday/start',
@@ -48,7 +53,7 @@ export async function registerMrRoutes(
 
   typed.get('/v1/mr/doctors', { preHandler: onlyMr }, async (req) => {
     const repo = new DoctorRepo(prisma, req.authUser!);
-    return { doctors: await repo.listForMrSelf() };
+    return repo.listForMrSelfWithContext();
   });
 
   typed.post(

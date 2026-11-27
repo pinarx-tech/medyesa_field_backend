@@ -1,5 +1,10 @@
 import { FastifyRequest } from 'fastify';
-import { AccountStatus, PrismaClient, Role } from '@prisma/client';
+import {
+  AccountStatus,
+  DataClassification,
+  PrismaClient,
+  Role,
+} from '@prisma/client';
 import { AppError } from '../lib/errors.js';
 import { verifyAccessToken } from '../lib/jwt.js';
 import { RequestContext } from '../lib/repo.js';
@@ -11,8 +16,9 @@ declare module 'fastify' {
 }
 
 /**
- * Verifies Bearer JWT and loads fresh user state (`companyId`, `role`,
- * `accountStatus`, `deletedAt`) from PostgreSQL on every request.
+ * Verifies Bearer JWT and loads fresh user + company state (`companyId`,
+ * `dataClassification`, `isActive`, `role`, `accountStatus`, `deletedAt`) in a
+ * single query, eliminating redundant company lookups across repositories.
  */
 export function buildAuthPreHandler(prisma: PrismaClient) {
   return async function authenticate(req: FastifyRequest): Promise<void> {
@@ -38,6 +44,15 @@ export function buildAuthPreHandler(prisma: PrismaClient) {
         deletedAt: true,
         employeeId: true,
         displayName: true,
+        company: {
+          select: {
+            id: true,
+            name: true,
+            code: true,
+            isActive: true,
+            dataClassification: true,
+          },
+        },
       },
     });
 
@@ -54,10 +69,25 @@ export function buildAuthPreHandler(prisma: PrismaClient) {
         'Account is not active. Contact your administrator.',
       );
     }
+    if (
+      user.role !== Role.platformAdmin &&
+      user.company &&
+      !user.company.isActive
+    ) {
+      throw new AppError(
+        'account_inactive',
+        403,
+        'Company account is inactive. Contact PINARX support.',
+      );
+    }
 
     req.authUser = {
       userId: user.id,
       companyId: user.companyId,
+      companyName: user.company?.name ?? null,
+      companyCode: user.company?.code ?? null,
+      companyClassification:
+        user.company?.dataClassification ?? DataClassification.production,
       role: user.role,
       employeeId: user.employeeId,
       displayName: user.displayName,

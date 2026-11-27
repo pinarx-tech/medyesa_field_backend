@@ -11,6 +11,7 @@ import { createLogger } from './lib/logger.js';
 import { getPrisma } from './lib/prisma.js';
 import { registerCors } from './plugins/cors.js';
 import { registerRateLimit } from './plugins/rateLimit.js';
+import { registerTimingPlugin } from './plugins/timing.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerHcRoutes } from './routes/hc.js';
@@ -36,6 +37,7 @@ export async function buildApp(
   app.setSerializerCompiler(serializerCompiler);
 
   await registerCors(app);
+  await registerTimingPlugin(app);
   if (!options.disableRateLimit) {
     await registerRateLimit(app);
   }
